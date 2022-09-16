@@ -98,6 +98,72 @@ def load_gs_from_pickle(pickle_filepath):
 
 ############################################### PLOTTING FUNCTIONS ###############################################
 
+def plot_categorical_interactions(df, x_categorical, interaction_categorical, response_variable="readmitted", response_success_level="NO", 
+                                  conf_level=0.95, figsize=(18, 6), drop_nans=True, xlab_fontsize=14, ylab_fontsize=14, tick_fontsize=12, 
+                                  tick_rotation=45, title_fontsize=16, seaborn_style="darkgrid"):
+    
+    sns.set_style(seaborn_style)
+    if drop_nans:
+        df = df.dropna(subset=[x_categorical, interaction_categorical]).copy(deep=True)
+    
+    x_categorical_levels = df[x_categorical].unique().tolist()
+    interaction_categorical_levels = df[interaction_categorical].unique().tolist()
+    
+    fig, ax = plt.subplots(nrows=1, ncols=1, squeeze=True, figsize=figsize)
+    
+    for lvl in interaction_categorical_levels:
+        
+        # Filter to get the data for  this line
+        plot_df = df.loc[df[interaction_categorical]==lvl,:].copy(deep=True)
+        
+        # Response counts for each level of x_categorical
+        counts = plot_df.groupby(by=x_categorical)[response_variable].value_counts()
+        
+        # Total number of responses for each level of x_categorical, when data is limited to 
+        # "level" in interaction_categorical_levels
+        group_var_nobs = counts.groupby(by=x_categorical).sum()
+        
+        group_var_levels = list(group_var_nobs.index)
+        group_nobs_map = {level:(group_var_nobs[level] if level in group_var_nobs.index else 0) for level in x_categorical_levels}
+        #success_levels = counts.index[counts.index.get_level_values(response_variable) == response_success_level]
+        success_counts = success_counts = counts[counts.index[counts.index.get_level_values(response_variable) == response_success_level]]
+        
+        success_count_map = {ind:success_counts[ind] for ind in success_counts.index}
+        for level in x_categorical_levels:
+            key = (level, response_success_level)
+            if key not in success_count_map.keys():
+                success_count_map[key] = 0
+        
+        # Confidence interval for the proportion of responses that have "response_success_level" for each level of the grouping variable
+        proportion_cis = [(group_level, *proportion_confint(count=success_count_map[(group_level, response_success_level)], 
+                                                            nobs=group_nobs_map[group_level], alpha=conf_level)) for group_level in x_categorical_levels]
+        
+        proportions_with_center = sorted([(name, lower, ((upper - lower)/2)+lower, upper) for name, lower, upper in proportion_cis], key=lambda sublist: sublist[2])
+        
+        # Separate out the X coordinates (names), y coordinates (best_estimates) and error_bar values
+        names = [name for name, lower, center, upper in proportions_with_center]
+        best_estimates = [center for name, lower, center, upper in proportions_with_center]
+        error_bars=[best_estimate - lower for name, lower, best_estimate, upper in proportions_with_center]
+        
+        pdf = pd.DataFrame({"name":names, "best_estimate":best_estimates, "error_bars":error_bars})
+        pdf["name"] = pd.Categorical(pdf["name"], x_categorical_levels)
+        pdf.sort_values(by="name", inplace=True)
+        
+        #plot_data = {"x_coords":names, "y_coords":best_estimates, "y_error_amounts":error_bars}
+        
+        ax.errorbar(x=pdf["name"], 
+                    y=pdf["best_estimate"], 
+                    yerr=pdf[ "error_bars"], 
+                    label=f"{interaction_categorical}={lvl}")
+        
+    plot_title = f"Proportion of {response_variable} having value of {response_success_level} at each combination {x_categorical} and {interaction_categorical}"
+    ax.set_title(f"{plot_title}", fontsize=title_fontsize, weight='bold')
+    ax.set_xlabel(x_categorical, fontsize=xlab_fontsize, weight='bold')
+    ax.set_ylabel(f"Proportion of {response_variable}={response_success_level}", fontsize=ylab_fontsize, weight='bold')
+    ax.tick_params(axis='both', labelsize=tick_fontsize, labelrotation=tick_rotation)
+    ax.legend()
+
+
 
 def plot_corr_matrix(dataframe, top_n=None, target=None, figsize=(10, 10), cmap="mako", annotate=True, linewidths=1):
     
