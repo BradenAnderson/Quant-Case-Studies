@@ -13,13 +13,12 @@ import time
 #import tensorflow as tf
 
 # Light GBM Models
-from lightgbm import LGBMRegressor
 from lightgbm import LGBMClassifier
 
 # Sklearn preprocessing and data handling
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler, OrdinalEncoder, OneHotEncoder
+from sklearn.preprocessing import StandardScaler, OrdinalEncoder, OneHotEncoder, PolynomialFeatures
 from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import cross_validate, GridSearchCV, train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error
@@ -38,6 +37,31 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import LogisticRegression, RidgeClassifier
 from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, AdaBoostClassifier
 from sklearn.metrics import accuracy_score, f1_score, recall_score, precision_score, roc_auc_score
+
+
+def create_polynomial_df(df, poly_features=None, interaction_only=True):
+    
+    temp_df = df.copy(deep=True)
+    
+    default_poly_features = ["num_procedures", "num_medications", "number_inpatient", "time_in_hospital", 
+                              "number_diagnoses", "number_outpatient", "number_emergency"]
+    
+    poly_features = poly_features if poly_features is not None else default_poly_features
+    
+    p_feats = PolynomialFeatures(interaction_only=True, include_bias=False)
+    
+    poly_df = pd.DataFrame(p_feats.fit_transform(temp_df.loc[:,poly_features]), 
+                           columns=p_feats.get_feature_names_out())
+    
+    poly_df = poly_df.loc[:,[col for col in poly_df.columns if col not in temp_df.columns]]
+    
+    temp_df.reset_index(drop=True, inplace=True)
+
+    poly_df.reset_index(drop=True, inplace=True)
+    
+    temp_df.loc[:,poly_df.columns] = poly_df
+    
+    return temp_df
 
 
 def get_gs_args(estimator, scoring, refit, save_name, base_save_path):
@@ -784,20 +808,127 @@ def display_correct_num_output_columns(df, numeric_features, nominal_cat_feats, 
     
     return num_columns
 
-#### Deep Learning Functions
-def get_learning_rate_scheduler(initial_lr=1e-7, lr_multiplication_factor=10, lr_multiply_every=20):
 
-    # Create a learning rate scheduler to adjust the learning rate during training
-    #
-    # Start with a very small learning rate (initial_lr) e.g. 1x10^-6 or 1x10^-7
-    #
-    # Increase learning rate gradually, by increasing by a factor
-    # of lr_multiplication_factor every lr_multiply_every epochs.
-    #
-    # Pass this lr_schedule as a callback to the fit method to adjust lr during training
+### Coef Plots
+def create_long_coef_df_from_gs(gs, model_step='logreg'):
+    
+    features = []
+    coefs = []
+    model_names = []
+    est = gs.best_estimator_.named_steps[model_step]
+    num_models = est.coef_.shape[0]
+    
+    for model_num in range(num_models):
+        f = gs.best_estimator_[:-1].get_feature_names_out().tolist()
+        features.extend(f)
+        coefs.extend(est.coef_[model_num,:].tolist())
+        
+        name = [f"model{model_num+1}" for _ in range(len(f))]
+        model_names.extend(name)
+    
+    c_long_df = pd.DataFrame({"feature":features, "coef":coefs, "model":model_names})
+    
+    return c_long_df
 
-    lr_schedule = tf.keras.callbacks.LearningRateScheduler(
-        lambda epoch: initial_lr * lr_multiplication_factor**(epoch/lr_multiply_every)
-    )
+def create_coef_df_from_gs(gs, model_step='logreg'):
+    
+    est = gs.best_estimator_.named_steps[model_step]
+    num_models = est.coef_.shape[0]
+    
+    c_dict = {f"model{num+1}_coefs":est.coef_[num,:].tolist() for num in range(num_models)}
+    c_dict["feature"] = gs.best_estimator_[:-1].get_feature_names_out()
+    
+    c_df = pd.DataFrame(c_dict)
+    return c_df
 
-    return lr_schedule
+
+def add_linebreaks_to_text(txt, chars_per_line=50):
+    chars_since_break = 0
+    formatted_words = []
+        
+    for word in txt.split():
+        chars_since_break+= len(word)
+        if chars_since_break > chars_per_line:
+            formatted_words.append(f"{word}<br>")
+            chars_since_break=0
+        else:
+            formatted_words.append(word)
+                
+    return " ".join(formatted_words)
+
+def create_topn_long_coef_df_from_gs(gs=None, long_df=None, topn=10, sort_model="model1", model_step='logreg', format_feature_names=True, chars_per_line=30):
+    
+    if gs is not None:
+        c_df = create_long_coef_df_from_gs(gs=gs, 
+                                           model_step=model_step)
+    else:
+        c_df = long_df.copy(deep=True)
+                                     
+    
+    sort_model_df = c_df.loc[c_df["model"]==sort_model,:].copy(deep=True)
+    sort_model_df = sort_model_df.reindex(sort_model_df["coef"].abs().sort_values(ascending=False).index)
+    
+    top_features = sort_model_df["feature"].tolist()[:topn]
+    topn_df = c_df.loc[c_df["feature"].isin(top_features),:].copy(deep=True)
+    
+    topn_df = topn_df.reindex(topn_df["coef"].abs().sort_values(ascending=True).index)
+
+    if format_feature_names:
+        for feature in topn_df["feature"].unique().tolist():
+            formatted_feature = add_linebreaks_to_text(txt=feature, chars_per_line=chars_per_line)
+            topn_df.loc[topn_df["feature"]==feature, "feature"] = formatted_feature
+    
+    return topn_df
+
+
+def error_analysis(model, X, y, dataset_type=""):
+    
+    dataset_type = dataset_type if dataset_type == "" else " " + dataset_type + " "
+    
+    pred_df = pd.DataFrame({"true":y, 
+                            "predicted":model.predict(X)})
+    
+    pred_df["correct"] = (pred_df["predicted"] == pred_df["true"]).astype(int)
+    
+    true_counts = pred_df["true"].value_counts()
+    true_pcts = pred_df["true"].value_counts(normalize=True)
+    
+    pred_counts = pred_df["predicted"].value_counts()
+    pred_pcts = pred_df["predicted"].value_counts(normalize=True)
+    
+    correct_counts = pred_df.loc[pred_df["correct"]==1, "true"].value_counts()
+    correct_pcts = pred_df.loc[pred_df["correct"]==1, "true"].value_counts(normalize=True)
+    
+    wrong_counts = pred_df.loc[pred_df["correct"]==0, "true"].value_counts()
+    wrong_pcts = pred_df.loc[pred_df["correct"]==0, "true"].value_counts(normalize=True)
+    
+    ttop = f"============================ Breadown of True{dataset_type}Class Labels ============================"
+    ptop = f"============================ Breadown of Predicted{dataset_type}Class Labels ============================"
+    ctop = f"============================ Breadown of Correct{dataset_type}Predictions ============================"
+    wtop =  f"============================ Breadown of Incorrect{dataset_type}Predictions ============================"
+    
+    # True
+    print(ttop)
+    print(true_counts, "\n\n", true_pcts, "\n", "="*len(ttop), "\n")
+    
+    # Predicted
+    print(ptop)
+    print(pred_counts, "\n\n", pred_pcts, "\n", "="*len(ptop), "\n")
+    
+    # Correct
+    print(ctop)
+    print(correct_counts, "\n\n", correct_pcts, "\n", "="*len(ctop), "\n")
+    
+    # Incorrect
+    print(wtop)
+    print(wrong_counts, "\n\n", wrong_pcts, "\n", "="*len(ctop), "\n")
+    
+    for target_class in np.unique(y):
+        class_df = pred_df.loc[pred_df["true"]==target_class,:]
+        class_pred_counts = class_df["predicted"].value_counts()
+        class_pred_pcts = class_df["predicted"].value_counts(normalize=True)
+        top = f"============================ Breadown of Predictions when true label is {target_class} ============================"
+        print(top)
+        print(class_pred_counts, "\n\n", class_pred_pcts, "\n", "="*len(top), "\n")
+    
+    return pred_df
