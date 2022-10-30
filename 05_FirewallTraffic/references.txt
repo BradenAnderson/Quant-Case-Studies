@@ -1,0 +1,6 @@
+https://archive.ics.uci.edu/ml/datasets/Internet+Firewall+Data
+
+file:///C:/Users/BDA/Downloads/electronics-11-01851-v2.pdf
+
+
+https://www.kaggle.com/datasets/tunguz/internet-firewall-data-set
